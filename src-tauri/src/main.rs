@@ -54,13 +54,20 @@ async fn spawn_download(app:AppHandle,state:AppState,id:u64,request:DownloadRequ
  let out=d.join(&request.filename);let _=existing_or_parent(&state,&out)?;
  let selector=if request.format.eq_ignore_ascii_case("mp3"){"bestaudio/best".to_string()}else{format!("bestvideo[height<={}] + bestaudio/best",request.quality.trim_end_matches('p'))};
  let mut cmd=Command::new("yt-dlp");cmd.args(["--newline","--no-playlist","--continue","-f",&selector,"--merge-output-format",&request.format,"-o",out.to_string_lossy().as_ref(),&request.url]).stdout(Stdio::piped()).stderr(Stdio::null());
- let mut child=cmd.spawn().map_err(|e|format!("Media engine unavailable: {e}"))?;let stdout=child.stdout.take().ok_or_else(||"Unable to read media engine progress".to_string())?;let mut lines=BufReader::new(stdout).lines();let (tx,mut rx)=mpsc::channel::<Control>(4);
- {let mut jobs=state.downloads.jobs.lock().await;jobs.insert(id,DownloadJob{request:request.clone(),control:tx.clone(),status:"downloading".into()});}
+ let mut child=cmd.spawn().map_err(|e|format!("Media engine unavailable: {e}"))?;
+ let stdout=child.stdout.take().ok_or_else(||"Unable to read media engine progress".to_string())?;
+ let mut lines=BufReader::new(stdout).lines();let(tx,mut rx)=mpsc::channel::<Control>(4);
+ {let mut jobs=state.downloads.jobs.lock().await;jobs.insert(id,DownloadJob{request:request.clone(),control:tx,status:"downloading".into()});}
  emit_progress(&app,id,"downloading",0.0,"","",&request.filename,None);
- loop{tokio::select!{line=lines.next_line()=>{match line{Ok(Some(line))=>{if let Some((p,s,e))=parse_progress(&line){emit_progress(&app,id,"downloading",p,&s,&e,&request.filename,None)}},Ok(None)=>break,Err(e)=>{let _=child.kill().await;return Err(e.to_string())}}},control=rx.recv()=>{match control{Some(Control::Cancel)=>{let _=child.kill().await;emit_progress(&app,id,"canceled",0.0,"","",&request.filename,None);break},Some(Control::Pause)=>{let _=child.kill().await;emit_progress(&app,id,"paused",0.0,"","",&request.filename,None);break},None=>break}}}}
+ let mut terminal_action:Option<&str>=None;
+ loop{tokio::select!{
+   line=lines.next_line()=>{match line{Ok(Some(line))=>{if let Some((p,s,e))=parse_progress(&line){emit_progress(&app,id,"downloading",p,&s,&e,&request.filename,None)}},Ok(None)=>break,Err(e)=>{let _=child.kill().await;terminal_action=Some("error");emit_progress(&app,id,"error",0.0,"","",&request.filename,Some(e.to_string()));break}}},
+   control=rx.recv()=>{match control{Some(Control::Cancel)=>{let _=child.kill().await;terminal_action=Some("canceled");emit_progress(&app,id,"canceled",0.0,"","",&request.filename,None);break},Some(Control::Pause)=>{let _=child.kill().await;terminal_action=Some("paused");emit_progress(&app,id,"paused",0.0,"","",&request.filename,None);break},None=>break}}
+ }}
+ if terminal_action==Some("paused"){let _=child.wait().await;let mut jobs=state.downloads.jobs.lock().await;if let Some(job)=jobs.get_mut(&id){job.status="paused".into()}return Ok(())}
  let status=child.wait().await.map_err(|e|e.to_string())?;
- let final_status=if status.success(){"completed"}else{"error"};
- emit_progress(&app,id,final_status,if status.success(){100.0}else{0.0},"","",&request.filename,if status.success(){None}else{Some("Download failed".into())});
+ let final_status=if status.success(){"completed"}else if terminal_action==Some("canceled"){"canceled"}else{"error"};
+ if final_status=="completed"{emit_progress(&app,id,final_status,100.0,"","",&request.filename,None)}else if final_status=="error"{emit_progress(&app,id,final_status,0.0,"","",&request.filename,Some("Download failed".into()))}
  state.downloads.jobs.lock().await.remove(&id);
  Ok(())
 }
