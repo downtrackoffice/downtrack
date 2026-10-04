@@ -121,7 +121,7 @@ fn download_concurrency(state:State<AppState>)->u64{state.downloads.max_parallel
 #[tauri::command]
 async fn start_download(app:AppHandle,state:State<'_,AppState>,mut req:DownloadRequest)->Result<u64,String>{
  let id=req.job_id.unwrap_or_else(||state.downloads.next_id.fetch_add(1,Ordering::Relaxed));req.job_id=Some(id);
- let tx=(mpsc::channel(4)).0;let mut jobs=state.downloads.jobs.lock().await;
+ let jobs=state.downloads.jobs.lock().await;
  if jobs.contains_key(&id){return Err("Download already exists".into())}
  drop(jobs);
  let placeholder=(mpsc::channel(4)).0;
@@ -145,8 +145,9 @@ async fn control_download(state:State<'_,AppState>,id:u64,action:String)->Result
 async fn resume_download(app:AppHandle,state:State<'_,AppState>,req:DownloadRequest)->Result<(),String>{
  let id=req.job_id.ok_or_else(||"Download id required".to_string())?;
  {
-   let jobs=state.downloads.jobs.lock().await;
-   if jobs.contains_key(&id){return Err("Download is already active".into())}
+   let mut jobs=state.downloads.jobs.lock().await;
+   if let Some(job)=jobs.get(&id){if job.status!="paused"{return Err("Download is already active".into())}}
+   jobs.remove(&id);
  }
  let app_clone=app.clone();let state_clone=state.inner().clone();
  tokio::spawn(async move{
