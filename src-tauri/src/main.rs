@@ -1,13 +1,13 @@
 use serde::{Deserialize,Serialize};
 use std::{collections::HashMap,fs,path::{Path,PathBuf},process::Stdio,sync::{Arc,Mutex},sync::atomic::{AtomicU64,Ordering}};
 use tauri::{AppHandle,Emitter,Manager,State};
-use tokio::{io::{AsyncBufReadExt,BufReader},process::{Child,Command},sync::{mpsc,Mutex as AsyncMutex}};
+use tokio::{io::{AsyncBufReadExt,BufReader},process::{Command},sync::{mpsc,Mutex as AsyncMutex,Semaphore}};
 
 #[derive(Default,Clone)]
 struct AppState{roots:Arc<Mutex<Vec<PathBuf>>>,downloads:Arc<DownloadStore>}
 
-struct DownloadStore{next_id:AtomicU64,jobs:AsyncMutex<HashMap<u64,DownloadJob>>}
-impl Default for DownloadStore{fn default()->Self{Self{next_id:AtomicU64::new(1),jobs:AsyncMutex::new(HashMap::new())}}}
+struct DownloadStore{next_id:AtomicU64,jobs:AsyncMutex<HashMap<u64,DownloadJob>>,slots:Arc<Semaphore>,max_parallel:AtomicU64}
+impl Default for DownloadStore{fn default()->Self{Self{next_id:AtomicU64::new(1),jobs:AsyncMutex::new(HashMap::new()),slots:Arc::new(Semaphore::new(3)),max_parallel:AtomicU64::new(3)}}}
 
 #[derive(Clone)]
 struct DownloadJob{request:DownloadRequest,control:mpsc::Sender<Control>,status:String}
@@ -50,6 +50,8 @@ fn parse_progress(line:&str)->Option<(f64,String,String)>{if !line.contains("[do
 fn emit_progress(app:&AppHandle,id:u64,status:&str,pct:f64,speed:&str,eta:&str,name:&str,msg:Option<String>){let _=app.emit("download-progress",DownloadEvent{id,status:status.into(),percent:pct,speed:speed.into(),eta:eta.into(),filename:name.into(),message:msg});}
 
 async fn spawn_download(app:AppHandle,state:AppState,id:u64,request:DownloadRequest)->Result<(),String>{
+ let permit=state.downloads.slots.clone().acquire_owned().await.map_err(|_|"Download scheduler unavailable".to_string())?;
+ {let mut jobs=state.downloads.jobs.lock().await;if let Some(job)=jobs.get_mut(&id){job.status="starting".into();}}
  let d=under_root(&state,&request.destination)?;tokio::fs::create_dir_all(&d).await.map_err(|e|e.to_string())?;
  let out=d.join(&request.filename);let _=existing_or_parent(&state,&out)?;
  let selector=if request.format.eq_ignore_ascii_case("mp3"){"bestaudio/best".to_string()}else{format!("bestvideo[height<={}] + bestaudio/best",request.quality.trim_end_matches('p'))};
@@ -68,11 +70,17 @@ async fn spawn_download(app:AppHandle,state:AppState,id:u64,request:DownloadRequ
  let status=child.wait().await.map_err(|e|e.to_string())?;
  let final_status=if status.success(){"completed"}else if terminal_action==Some("canceled"){"canceled"}else{"error"};
  if final_status=="completed"{emit_progress(&app,id,final_status,100.0,"","",&request.filename,None)}else if final_status=="error"{emit_progress(&app,id,final_status,0.0,"","",&request.filename,Some("Download failed".into()))}
- state.downloads.jobs.lock().await.remove(&id);
+ state.downloads.jobs.lock().await.remove(&id);drop(permit);
  Ok(())
 }
 
 enum Control{Pause,Cancel}
+
+#[tauri::command]
+fn set_download_concurrency(state:State<AppState>,max_parallel:u64)->Result<u64,String>{let value=max_parallel.clamp(1,8);let current=state.downloads.max_parallel.swap(value,Ordering::Relaxed);if value>current{state.downloads.slots.add_permits((value-current) as usize)}else if value<current{return Ok(value)}Ok(value)}
+
+#[tauri::command]
+fn download_concurrency(state:State<AppState>)->u64{state.downloads.max_parallel.load(Ordering::Relaxed)}
 
 #[tauri::command]
 async fn start_download(app:AppHandle,state:State<'_,AppState>,mut req:DownloadRequest)->Result<u64,String>{
@@ -108,4 +116,4 @@ async fn resume_download(app:AppHandle,state:State<'_,AppState>,req:DownloadRequ
 #[tauri::command]
 async fn inspect_media(url:String)->Result<MediaInfo,String>{let o=tokio::process::Command::new("yt-dlp").args(["--dump-single-json","--no-playlist",&url]).stdout(Stdio::piped()).stderr(Stdio::null()).output().await.map_err(|e|e.to_string())?;if !o.status.success(){return Err("Unable to inspect media".into())}let v:serde_json::Value=serde_json::from_slice(&o.stdout).map_err(|e|e.to_string())?;Ok(MediaInfo{title:v.get("title").and_then(|x|x.as_str()).unwrap_or("Untitled").into(),thumbnail:v.get("thumbnail").and_then(|x|x.as_str()).map(String::from),duration:v.get("duration_string").and_then(|x|x.as_str()).map(String::from),uploader:v.get("uploader").and_then(|x|x.as_str()).map(String::from)})}
 
-fn main(){tauri::Builder::default().manage(AppState{roots:Arc::new(Mutex::new(Vec::new())),downloads:Arc::new(DownloadStore::default())}).setup(|app|{let roots=load_roots(app.handle());let state=app.state::<AppState>();*state.roots.lock().map_err(|_|"root lock failed")?=roots;Ok(())}).invoke_handler(tauri::generate_handler![authorized_roots,pick_root,remove_root,list_directory,create_directory,rename_entry,delete_entry,move_entry,copy_entry,open_location,start_download,control_download,resume_download,inspect_media]).run(tauri::generate_context!()).expect("DownTrack failed to start")}
+fn main(){tauri::Builder::default().manage(AppState{roots:Arc::new(Mutex::new(Vec::new())),downloads:Arc::new(DownloadStore::default())}).setup(|app|{let roots=load_roots(app.handle());let state=app.state::<AppState>();*state.roots.lock().map_err(|_|"root lock failed")?=roots;Ok(())}).invoke_handler(tauri::generate_handler![authorized_roots,pick_root,remove_root,list_directory,create_directory,rename_entry,delete_entry,move_entry,copy_entry,open_location,set_download_concurrency,download_concurrency,start_download,control_download,resume_download,inspect_media]).run(tauri::generate_context!()).expect("DownTrack failed to start")}
