@@ -23,7 +23,7 @@ struct RootView{id:String,name:String,path:String}
 #[derive(Serialize,Clone)]
 struct FileEntry{name:String,path:String,is_dir:bool,size:u64,extension:Option<String>}
 #[derive(Serialize)]
-struct MediaInfo{title:String,thumbnail:Option<String>,duration:Option<String>,uploader:Option<String>}
+struct MediaInfo{title:String,thumbnail:Option<String>,duration:Option<String>,uploader:Option<String>,qualities:Vec<u64>}
 
 fn engine_binary(app:&AppHandle,name:&str)->String{
     let exe=if cfg!(target_os="windows"){format!("{name}.exe")}else{name.to_string()};
@@ -144,6 +144,6 @@ async fn resume_download(app:AppHandle,state:State<'_,AppState>,req:DownloadRequ
 
 #[tauri::command]
 async fn inspect_media(app:AppHandle,url:String)->Result<MediaInfo,String>{
- let yt=engine_binary(&app,"yt-dlp");let mut cmd=tokio::process::Command::new(yt);cmd.args(["--dump-single-json","--no-playlist",&url]);if let Some(bin)=engine_dir(&app){cmd.arg("--ffmpeg-location").arg(bin)}let o=cmd.stdout(Stdio::piped()).stderr(Stdio::null()).output().await.map_err(|e|e.to_string())?;if !o.status.success(){return Err("Unable to inspect media".into())}let v:serde_json::Value=serde_json::from_slice(&o.stdout).map_err(|e|e.to_string())?;Ok(MediaInfo{title:v.get("title").and_then(|x|x.as_str()).unwrap_or("Untitled").into(),thumbnail:v.get("thumbnail").and_then(|x|x.as_str()).map(String::from),duration:v.get("duration_string").and_then(|x|x.as_str()).map(String::from),uploader:v.get("uploader").and_then(|x|x.as_str()).map(String::from)})}
+ let yt=engine_binary(&app,"yt-dlp");let mut cmd=tokio::process::Command::new(yt);cmd.args(["--dump-single-json","--no-playlist",&url]);if let Some(bin)=engine_dir(&app){cmd.arg("--ffmpeg-location").arg(bin)}let o=cmd.stdout(Stdio::piped()).stderr(Stdio::null()).output().await.map_err(|e|e.to_string())?;if !o.status.success(){return Err("Unable to inspect media".into())}let v:serde_json::Value=serde_json::from_slice(&o.stdout).map_err(|e|e.to_string())?;let mut heights=v.get("formats").and_then(|x|x.as_array()).map(|items|items.iter().filter_map(|f|{let h=f.get("height").and_then(|x|x.as_u64())?;let codec=f.get("vcodec").and_then(|x|x.as_str()).unwrap_or("none");if codec=="none"{None}else{Some(h)}}).collect::<Vec<_>>()).unwrap_or_default();heights.sort_unstable();heights.dedup();Ok(MediaInfo{title:v.get("title").and_then(|x|x.as_str()).unwrap_or("Untitled").into(),thumbnail:v.get("thumbnail").and_then(|x|x.as_str()).map(String::from),duration:v.get("duration_string").and_then(|x|x.as_str()).map(String::from),uploader:v.get("uploader").and_then(|x|x.as_str()).map(String::from),qualities:heights})}
 
 fn main(){tauri::Builder::default().manage(AppState{roots:Arc::new(Mutex::new(Vec::new())),downloads:Arc::new(DownloadStore::default())}).setup(|app|{let roots=load_roots(app.handle());let state=app.state::<AppState>();*state.roots.lock().map_err(|_|"root lock failed")?=roots;Ok(())}).invoke_handler(tauri::generate_handler![authorized_roots,pick_root,remove_root,list_directory,create_directory,rename_entry,delete_entry,move_entry,copy_entry,open_location,set_download_concurrency,download_concurrency,start_download,control_download,resume_download,inspect_media]).run(tauri::generate_context!()).expect("DownTrack failed to start")}
