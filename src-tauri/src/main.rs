@@ -63,7 +63,7 @@ fn safe_child_name(name:&str)->Result<(),String>{
 #[tauri::command]fn move_entry(state:State<AppState>,source:String,destination_parent:String)->Result<(),String>{let src=under_root(&state,Path::new(&source))?;let parent=under_root(&state,Path::new(&destination_parent))?;if src==parent||parent.starts_with(&src){return Err("Cannot move an item inside itself".into())}let name=src.file_name().ok_or_else(||"Invalid path".to_string())?;let dst=parent.join(name);if dst.exists(){return Err("An item with this name already exists".into())}fs::rename(src,dst).map_err(|e|e.to_string())}
 fn copy_dir(src:&Path,dst:&Path)->Result<(),String>{fs::create_dir(dst).map_err(|e|e.to_string())?;for item in fs::read_dir(src).map_err(|e|e.to_string())?{let e=item.map_err(|e|e.to_string())?;let from=e.path();let to=dst.join(e.file_name());if from.is_dir(){copy_dir(&from,&to)?}else{fs::copy(&from,&to).map_err(|e|e.to_string())?}}Ok(())}
 #[tauri::command]fn copy_entry(state:State<AppState>,source:String,destination_parent:String)->Result<(),String>{let src=under_root(&state,Path::new(&source))?;let parent=under_root(&state,Path::new(&destination_parent))?;if src==parent||parent.starts_with(&src){return Err("Cannot copy an item inside itself".into())}let name=src.file_name().ok_or_else(||"Invalid path".to_string())?;let dst=parent.join(name);if dst.exists(){return Err("An item with this name already exists".into())}if src.is_dir(){copy_dir(&src,&dst)}else{fs::copy(src,dst).map_err(|e|e.to_string()).map(|_|())}}
-#[tauri::command]fn open_location(path:String)->Result<(),String>{#[cfg(target_os="windows")]{std::process::Command::new("explorer").arg(path).spawn().map_err(|e|e.to_string())?;}#[cfg(target_os="macos")]{std::process::Command::new("open").arg(path).spawn().map_err(|e|e.to_string())?;}#[cfg(target_os="linux")]{std::process::Command::new("xdg-open").arg(path).spawn().map_err(|e|e.to_string())?;}Ok(())}
+#[tauri::command]fn open_location(state:State<AppState>,path:String)->Result<(),String>{let safe=under_root(&state,Path::new(&path))?;#[cfg(target_os="windows")]{std::process::Command::new("explorer").arg(&safe).spawn().map_err(|e|e.to_string())?;}#[cfg(target_os="macos")]{std::process::Command::new("open").arg(&safe).spawn().map_err(|e|e.to_string())?;}#[cfg(target_os="linux")]{std::process::Command::new("xdg-open").arg(&safe).spawn().map_err(|e|e.to_string())?;}Ok(())}
 
 struct ActiveGuard{store:Arc<DownloadStore>}
 impl Drop for ActiveGuard{fn drop(&mut self){self.store.active.fetch_sub(1,Ordering::Relaxed);self.store.notify.notify_waiters();}}
@@ -73,7 +73,18 @@ async fn acquire_slot(store:Arc<DownloadStore>)->Result<ActiveGuard,String>{loop
 fn parse_progress(line:&str)->Option<(f64,String,String)>{if !line.contains("[download]")||!line.contains('%'){return None}let mut percent=None;for token in line.split_whitespace(){let t=token.trim_end_matches('%');if let Ok(v)=t.parse::<f64>(){if v>=0.0&&v<=100.0{percent=Some(v);break}}}let speed=line.split(" at ").nth(1).and_then(|s|s.split_whitespace().next()).unwrap_or("").to_string();let eta=line.split(" ETA ").nth(1).and_then(|s|s.split_whitespace().next()).unwrap_or("").to_string();percent.map(|p|(p,speed,eta))}
 fn emit_progress(app:&AppHandle,id:u64,status:&str,pct:f64,speed:&str,eta:&str,name:&str,msg:Option<String>){let _=app.emit("download-progress",DownloadEvent{id,status:status.into(),percent:pct,speed:speed.into(),eta:eta.into(),filename:name.into(),message:msg});}
 
+fn validate_media_request(req:&DownloadRequest)->Result<(),String>{
+ let url=req.url.trim();
+ if !(url.starts_with("http://")||url.starts_with("https://")){return Err("Only HTTP(S) media URLs are supported".into())}
+ if !matches!(req.format.to_ascii_uppercase().as_str(),"MP4"|"MKV"|"MP3"){return Err("Unsupported media format".into())}
+ let height=req.quality.trim_end_matches('p').parse::<u64>().map_err(|_|"Invalid media quality".to_string())?;
+ if !(144..=4320).contains(&height){return Err("Invalid media quality".into())}
+ safe_child_name(&req.filename)?;
+ Ok(())
+}
+
 async fn spawn_download(app:AppHandle,state:AppState,id:u64,request:DownloadRequest)->Result<(),String>{
+ validate_media_request(&request)?;
  let _slot=acquire_slot(state.downloads.clone()).await?;
  {let mut jobs=state.downloads.jobs.lock().await;if let Some(job)=jobs.get_mut(&id){job.status="starting".into();}}
  let d=under_root(&state,&request.destination)?;tokio::fs::create_dir_all(&d).await.map_err(|e|e.to_string())?;
@@ -149,6 +160,7 @@ async fn resume_download(app:AppHandle,state:State<'_,AppState>,req:DownloadRequ
 
 #[tauri::command]
 async fn inspect_media(app:AppHandle,url:String)->Result<MediaInfo,String>{
+ let trimmed=url.trim();if !(trimmed.starts_with("http://")||trimmed.starts_with("https://")){return Err("Only HTTP(S) media URLs are supported".into())}
  let yt=engine_binary(&app,"yt-dlp");let mut cmd=tokio::process::Command::new(yt);cmd.args(["--dump-single-json","--no-playlist",&url]);if let Some(bin)=engine_dir(&app){cmd.arg("--ffmpeg-location").arg(bin)}let o=cmd.stdout(Stdio::piped()).stderr(Stdio::null()).output().await.map_err(|e|e.to_string())?;if !o.status.success(){return Err("Unable to inspect media".into())}let v:serde_json::Value=serde_json::from_slice(&o.stdout).map_err(|e|e.to_string())?;let mut heights=v.get("formats").and_then(|x|x.as_array()).map(|items|items.iter().filter_map(|f|{let h=f.get("height").and_then(|x|x.as_u64())?;let codec=f.get("vcodec").and_then(|x|x.as_str()).unwrap_or("none");if codec=="none"{None}else{Some(h)}}).collect::<Vec<_>>()).unwrap_or_default();heights.sort_unstable();heights.dedup();Ok(MediaInfo{title:v.get("title").and_then(|x|x.as_str()).unwrap_or("Untitled").into(),thumbnail:v.get("thumbnail").and_then(|x|x.as_str()).map(String::from),duration:v.get("duration_string").and_then(|x|x.as_str()).map(String::from),uploader:v.get("uploader").and_then(|x|x.as_str()).map(String::from),qualities:heights})}
 
 fn main(){tauri::Builder::default().manage(AppState{roots:Arc::new(Mutex::new(Vec::new())),downloads:Arc::new(DownloadStore::default())}).setup(|app|{let roots=load_roots(app.handle());let state=app.state::<AppState>();*state.roots.lock().map_err(|_|"root lock failed")?=roots;Ok(())}).invoke_handler(tauri::generate_handler![authorized_roots,pick_root,remove_root,list_directory,create_directory,rename_entry,delete_entry,move_entry,copy_entry,open_location,set_download_concurrency,download_concurrency,start_download,control_download,resume_download,inspect_media]).run(tauri::generate_context!()).expect("DownTrack failed to start")}
