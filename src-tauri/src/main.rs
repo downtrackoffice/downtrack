@@ -1,13 +1,13 @@
 use serde::{Deserialize,Serialize};
 use std::{collections::HashMap,fs,path::{Path,PathBuf},process::Stdio,sync::{Arc,Mutex},sync::atomic::{AtomicU64,Ordering}};
 use tauri::{AppHandle,Emitter,Manager,State};
-use tokio::{io::{AsyncBufReadExt,BufReader},process::{Command},sync::{mpsc,Mutex as AsyncMutex,Semaphore}};
+use tokio::{io::{AsyncBufReadExt,BufReader},process::Command,sync::{mpsc,Mutex as AsyncMutex,Notify}};
 
 #[derive(Default,Clone)]
 struct AppState{roots:Arc<Mutex<Vec<PathBuf>>>,downloads:Arc<DownloadStore>}
 
-struct DownloadStore{next_id:AtomicU64,jobs:AsyncMutex<HashMap<u64,DownloadJob>>,slots:Arc<Semaphore>,max_parallel:AtomicU64}
-impl Default for DownloadStore{fn default()->Self{Self{next_id:AtomicU64::new(1),jobs:AsyncMutex::new(HashMap::new()),slots:Arc::new(Semaphore::new(3)),max_parallel:AtomicU64::new(3)}}}
+struct DownloadStore{next_id:AtomicU64,jobs:AsyncMutex<HashMap<u64,DownloadJob>>,active:AtomicU64,max_parallel:AtomicU64,notify:Notify}
+impl Default for DownloadStore{fn default()->Self{Self{next_id:AtomicU64::new(1),jobs:AsyncMutex::new(HashMap::new()),active:AtomicU64::new(0),max_parallel:AtomicU64::new(3),notify:Notify::new()}}}
 
 #[derive(Clone)]
 struct DownloadJob{request:DownloadRequest,control:mpsc::Sender<Control>,status:String}
@@ -53,11 +53,11 @@ fn copy_dir(src:&Path,dst:&Path)->Result<(),String>{fs::create_dir(dst).map_err(
 #[tauri::command]fn copy_entry(state:State<AppState>,source:String,destination_parent:String)->Result<(),String>{let src=under_root(&state,Path::new(&source))?;let parent=under_root(&state,Path::new(&destination_parent))?;if src==parent||parent.starts_with(&src){return Err("Cannot copy an item inside itself".into())}let name=src.file_name().ok_or_else(||"Invalid path".to_string())?;let dst=parent.join(name);if dst.exists(){return Err("An item with this name already exists".into())}if src.is_dir(){copy_dir(&src,&dst)}else{fs::copy(src,dst).map_err(|e|e.to_string()).map(|_|())}}
 #[tauri::command]fn open_location(path:String)->Result<(),String>{#[cfg(target_os="windows")]{std::process::Command::new("explorer").arg(path).spawn().map_err(|e|e.to_string())?;}#[cfg(target_os="macos")]{std::process::Command::new("open").arg(path).spawn().map_err(|e|e.to_string())?;}#[cfg(target_os="linux")]{std::process::Command::new("xdg-open").arg(path).spawn().map_err(|e|e.to_string())?;}Ok(())}
 
-fn parse_progress(line:&str)->Option<(f64,String,String)>{if !line.contains("[download]")||!line.contains('%'){return None}let mut percent=None;for token in line.split_whitespace(){let t=token.trim_end_matches('%');if let Ok(v)=t.parse::<f64>(){if v>=0.0&&v<=100.0{percent=Some(v);break}}}let speed=line.split(" at ").nth(1).and_then(|s|s.split_whitespace().next()).unwrap_or("").to_string();let eta=line.split(" ETA ").nth(1).and_then(|s|s.split_whitespace().next()).unwrap_or("").to_string();percent.map(|p|(p,speed,eta))}
+struct ActiveGuard{store:Arc<DownloadStore>}\nimpl Drop for ActiveGuard{fn drop(&mut self){self.store.active.fetch_sub(1,Ordering::Relaxed);self.store.notify.notify_waiters();}}\n\nasync fn acquire_slot(store:Arc<DownloadStore>)->Result<ActiveGuard,String>{loop{let limit=store.max_parallel.load(Ordering::Relaxed);let active=store.active.load(Ordering::Relaxed);if active<limit&&store.active.compare_exchange(active,active+1,Ordering::AcqRel,Ordering::Relaxed).is_ok(){return Ok(ActiveGuard{store})}store.notify.notified().await}}\n\nfn parse_progress(line:&str)->Option<(f64,String,String)>{if !line.contains("[download]")||!line.contains('%'){return None}let mut percent=None;for token in line.split_whitespace(){let t=token.trim_end_matches('%');if let Ok(v)=t.parse::<f64>(){if v>=0.0&&v<=100.0{percent=Some(v);break}}}let speed=line.split(" at ").nth(1).and_then(|s|s.split_whitespace().next()).unwrap_or("").to_string();let eta=line.split(" ETA ").nth(1).and_then(|s|s.split_whitespace().next()).unwrap_or("").to_string();percent.map(|p|(p,speed,eta))}
 fn emit_progress(app:&AppHandle,id:u64,status:&str,pct:f64,speed:&str,eta:&str,name:&str,msg:Option<String>){let _=app.emit("download-progress",DownloadEvent{id,status:status.into(),percent:pct,speed:speed.into(),eta:eta.into(),filename:name.into(),message:msg});}
 
 async fn spawn_download(app:AppHandle,state:AppState,id:u64,request:DownloadRequest)->Result<(),String>{
- let permit=state.downloads.slots.clone().acquire_owned().await.map_err(|_|"Download scheduler unavailable".to_string())?;
+ let _slot=acquire_slot(state.downloads.clone()).await?;
  {let mut jobs=state.downloads.jobs.lock().await;if let Some(job)=jobs.get_mut(&id){job.status="starting".into();}}
  let d=under_root(&state,&request.destination)?;tokio::fs::create_dir_all(&d).await.map_err(|e|e.to_string())?;
  safe_child_name(&request.filename)?;let out=d.join(&request.filename);let _=existing_or_parent(&state,&out)?;
@@ -77,14 +77,14 @@ async fn spawn_download(app:AppHandle,state:AppState,id:u64,request:DownloadRequ
  let status=child.wait().await.map_err(|e|e.to_string())?;
  let final_status=if status.success(){"completed"}else if terminal_action==Some("canceled"){"canceled"}else{"error"};
  if final_status=="completed"{emit_progress(&app,id,final_status,100.0,"","",&request.filename,None)}else if final_status=="error"{emit_progress(&app,id,final_status,0.0,"","",&request.filename,Some("Download failed".into()))}
- state.downloads.jobs.lock().await.remove(&id);drop(permit);
+ state.downloads.jobs.lock().await.remove(&id);
  Ok(())
 }
 
 enum Control{Pause,Cancel}
 
 #[tauri::command]
-fn set_download_concurrency(state:State<AppState>,max_parallel:u64)->Result<u64,String>{let value=max_parallel.clamp(1,8);let current=state.downloads.max_parallel.swap(value,Ordering::Relaxed);if value>current{state.downloads.slots.add_permits((value-current) as usize)}else if value<current{return Ok(value)}Ok(value)}
+fn set_download_concurrency(state:State<AppState>,max_parallel:u64)->Result<u64,String>{let value=max_parallel.clamp(1,8);state.downloads.max_parallel.store(value,Ordering::Relaxed);state.downloads.notify.notify_waiters();Ok(value)}
 
 #[tauri::command]
 fn download_concurrency(state:State<AppState>)->u64{state.downloads.max_parallel.load(Ordering::Relaxed)}
