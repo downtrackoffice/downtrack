@@ -94,9 +94,15 @@ async fn control_download(state:State<'_,AppState>,id:u64,action:String)->Result
 }
 
 #[tauri::command]
-async fn resume_download(app:AppHandle,state:State<'_,AppState>,id:u64)->Result<(),String>{
- let request={let jobs=state.downloads.jobs.lock().await;jobs.get(&id).map(|j|j.request.clone()).ok_or_else(||"Download not found".to_string())?};
- let app_clone=app.clone();let state_clone=state.inner().clone();tokio::spawn(async move{let _=spawn_download(app_clone,state_clone,id,request).await;});Ok(())
+async fn resume_download(app:AppHandle,state:State<'_,AppState>,req:DownloadRequest)->Result<(),String>{
+ let id=req.job_id.ok_or_else(||"Download id required".to_string())?;
+ {
+   let jobs=state.downloads.jobs.lock().await;
+   if jobs.contains_key(&id){return Err("Download is already active".into())}
+ }
+ let app_clone=app.clone();let state_clone=state.inner().clone();
+ tokio::spawn(async move{let _=spawn_download(app_clone,state_clone,id,req).await;});
+ Ok(())
 }
 
 #[tauri::command]
