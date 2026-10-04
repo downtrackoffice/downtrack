@@ -87,3 +87,4 @@
 
 .concurrency-select{display:block;min-width:150px;margin-top:7px;height:34px;background:#081a27;border:1px solid #1c384d;border-radius:7px;color:#cfe0ed;padding:0 9px;outline:0}
 .app.light .concurrency-select{background:#f5f9fb;border-color:#cbdbe5;color:#284253}
+.media-options{display:flex;gap:7px;margin:11px 0 3px}.check-option{flex:1!important;display:flex!important;align-items:center;gap:7px;padding:9px 10px;margin:0!important;background:#091b29;border:1px solid #19374d;border-radius:8px;color:#7892a5!important;font-size:10px!important}.check-option input{width:15px;height:15px;margin:0;accent-color:#2d91ef}.app.light .check-option{background:#f3f8fb;border-color:#cadbe5;color:#627c8e!important}@media(max-width:620px){.media-options{flex-direction:column}}
