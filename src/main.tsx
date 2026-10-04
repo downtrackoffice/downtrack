@@ -42,7 +42,7 @@ function App(){
  useEffect(()=>{try{localStorage.setItem('downtrack-jobs',JSON.stringify(jobs))}catch{}},[jobs]);
  useEffect(()=>{document.documentElement.lang=language;document.documentElement.dir=direction},[language,direction]);
  useEffect(()=>{const saved=Math.min(8,Math.max(1,Number(localStorage.getItem('downtrack-concurrency'))||3));setConcurrency(saved);invoke<number>('set_download_concurrency',{maxParallel:saved}).catch(()=>{})},[]);
- useEffect(()=>{let off:UnlistenFn|undefined;refreshRoots().finally(()=>setLoading(false));listen<any>('download-progress',event=>{const e=event.payload as {id:number;status:string;percent:number;speed:string;eta:string;filename:string};setJobs(prev=>prev.map(j=>j.id===e.id?{...j,progress:e.percent,speed:e.speed,eta:e.eta,status:e.status==='completed'?'done':e.status==='paused'?'paused':e.status==='canceled'?'canceled':e.status==='error'?'error':'downloading'}:j))}).then(x=>off=x).catch(()=>{});return()=>{if(off)off()};},[]);
+ useEffect(()=>{let off:UnlistenFn|undefined;refreshRoots().finally(()=>setLoading(false));listen<any>('download-progress',event=>{const e=event.payload as {id:number;status:string;percent:number;speed:string;eta:string;filename:string;message?:string};setJobs(prev=>prev.map(j=>j.id===e.id?{...j,progress:e.percent,speed:e.speed,eta:e.message||e.eta,status:e.status==='completed'?'done':e.status==='paused'?'paused':e.status==='canceled'?'canceled':e.status==='error'?'error':'downloading'}:j))}).then(x=>off=x).catch(()=>{});return()=>{if(off)off()};},[]);
  useEffect(()=>{if(currentPath)loadDir(currentPath)},[currentPath]);
 
  const addRoot=async()=>{try{const root=await invoke<Root|null>('pick_root');if(root){await refreshRoots();setCurrentPath(root.path)}}catch(e){setError(String(e))}};
