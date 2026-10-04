@@ -119,7 +119,6 @@ async fn start_download(app:AppHandle,state:State<'_,AppState>,mut req:DownloadR
 #[tauri::command]
 async fn control_download(state:State<'_,AppState>,id:u64,action:String)->Result<(),String>{
  let sender={let jobs=state.downloads.jobs.lock().await;let job=jobs.get(&id).ok_or_else(||"Download not found".to_string())?;if job.status!="downloading"{return Err(format!("Download is {}",job.status))}job.control.clone()};let msg=match action.as_str(){"pause"=>Control::Pause,"cancel"=>Control::Cancel,_=>return Err("Unknown download action".into())};sender.send(msg).await.map_err(|_|"Download control channel closed".into())}
-}
 
 #[tauri::command]
 async fn resume_download(app:AppHandle,state:State<'_,AppState>,req:DownloadRequest)->Result<(),String>{
