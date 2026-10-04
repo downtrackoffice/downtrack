@@ -80,3 +80,7 @@
 .app.light .download-filters button{background:#f3f8fb;border-color:#cbdce6;color:#647d8e}
 .app.light .download-filters button.picked{background:#e7f3fb;border-color:#2c8fe8;color:#216f9c}
 .app.light .center-job{background:#fff;border-color:#d8e3ea}.app.light .center-actions button{background:#f1f6f9;border-color:#ccdce5;color:#617b8d}.app.light .center-actions button:hover{background:#e3eef5;color:#2a5f7e}
+
+.app.ltr{direction:ltr}.app.ltr .sidebar{border-left:0;border-right:1px solid #ffffff12}.app.ltr .downloads-panel{right:0;left:248px}.app.ltr .brand{direction:ltr}.app.ltr .crumbs,.app.ltr .file-tools,.app.ltr .title-row,.app.ltr .panel-head,.app.ltr .job,.app.ltr .center-job,.app.ltr .root-row{direction:ltr}.app.ltr .search{margin-right:0;margin-left:auto}.app.ltr .more{left:auto;right:9px}.app.ltr .secure{direction:ltr;text-align:left}.app.ltr .modal{direction:ltr;text-align:left}
+.language-select{display:block;min-width:190px;margin-top:7px;height:34px;background:#081a27;border:1px solid #1c384d;border-radius:7px;color:#cfe0ed;padding:0 9px;outline:0}
+.app.light .language-select{background:#f5f9fb;border-color:#cbdbe5;color:#284253}
