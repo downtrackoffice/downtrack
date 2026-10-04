@@ -1,5 +1,5 @@
 use serde::{Deserialize,Serialize};
-use std::{collections::HashMap,fs,path::{Path,PathBuf},process::Stdio,sync::{Arc,Mutex},sync::atomic::{AtomicU64,Ordering}};
+use std::{collections::HashMap,fs,path::{Path,PathBuf},process::Stdio,sync::{Arc,Mutex},sync::atomic::{AtomicU64,Ordering},time::{SystemTime,UNIX_EPOCH}};
 use tauri::{AppHandle,Emitter,Manager,State};
 use tokio::{io::{AsyncBufReadExt,BufReader},process::Command,sync::{mpsc,Mutex as AsyncMutex,Notify}};
 
@@ -7,7 +7,7 @@ use tokio::{io::{AsyncBufReadExt,BufReader},process::Command,sync::{mpsc,Mutex a
 struct AppState{roots:Arc<Mutex<Vec<PathBuf>>>,downloads:Arc<DownloadStore>}
 
 struct DownloadStore{next_id:AtomicU64,jobs:AsyncMutex<HashMap<u64,DownloadJob>>,active:AtomicU64,max_parallel:AtomicU64,notify:Notify}
-impl Default for DownloadStore{fn default()->Self{Self{next_id:AtomicU64::new(1),jobs:AsyncMutex::new(HashMap::new()),active:AtomicU64::new(0),max_parallel:AtomicU64::new(3),notify:Notify::new()}}}
+impl Default for DownloadStore{fn default()->Self{let seed=SystemTime::now().duration_since(UNIX_EPOCH).map(|d|d.as_millis() as u64).unwrap_or(1);Self{next_id:AtomicU64::new(seed),jobs:AsyncMutex::new(HashMap::new()),active:AtomicU64::new(0),max_parallel:AtomicU64::new(3),notify:Notify::new()}}}
 
 #[derive(Clone)]
 struct DownloadJob{request:DownloadRequest,control:mpsc::Sender<Control>,status:String}
