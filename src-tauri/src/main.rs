@@ -112,7 +112,12 @@ async fn start_download(app:AppHandle,state:State<'_,AppState>,mut req:DownloadR
  let job=DownloadJob{request:req.clone(),control:placeholder,status:"starting".into()};
  state.downloads.jobs.lock().await.insert(id,job);
  let state_clone=state.inner().clone();let app_clone=app.clone();
- tokio::spawn(async move{let _=spawn_download(app_clone,state_clone,id,req).await;});
+ tokio::spawn(async move{
+     if let Err(err)=spawn_download(app_clone.clone(),state_clone.clone(),id,req.clone()).await{
+        emit_progress(&app_clone,id,"error",0.0,"","",&req.filename,Some(err));
+        state_clone.downloads.jobs.lock().await.remove(&id);
+     }
+ });
  Ok(id)
 }
 
@@ -128,7 +133,12 @@ async fn resume_download(app:AppHandle,state:State<'_,AppState>,req:DownloadRequ
    if jobs.contains_key(&id){return Err("Download is already active".into())}
  }
  let app_clone=app.clone();let state_clone=state.inner().clone();
- tokio::spawn(async move{let _=spawn_download(app_clone,state_clone,id,req).await;});
+ tokio::spawn(async move{
+     if let Err(err)=spawn_download(app_clone.clone(),state_clone.clone(),id,req.clone()).await{
+        emit_progress(&app_clone,id,"error",0.0,"","",&req.filename,Some(err));
+        state_clone.downloads.jobs.lock().await.remove(&id);
+     }
+ });
  Ok(())
 }
 
