@@ -95,7 +95,7 @@ fn list_directory(state:State<AppState>,path:String)->Result<Vec<FileEntry>,Stri
 
 fn safe_child_name(name:&str)->Result<(),String>{
     let trimmed=name.trim();
-    if trimmed.is_empty()||trimmed=="."||trimmed==".."||trimmed.contains(['\\','/']){return Err("Invalid name".into())}
+    if trimmed.is_empty()||trimmed=="."||trimmed==".."||trimmed.contains('\\\\') || trimmed.contains('/'){return Err("Invalid name".into())}
     Ok(())
 }
 
