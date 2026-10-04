@@ -2,10 +2,13 @@
 name="downtrack"
 version="0.1.0"
 edition="2021"
+
 [build-dependencies]
 tauri-build={version="2"}
+
 [dependencies]
 tauri={version="2"}
 serde={version="1",features=["derive"]}
 serde_json="1"
 tokio={version="1",features=["process","sync","rt-multi-thread","macros","fs"]}
+rfd="0.15"
