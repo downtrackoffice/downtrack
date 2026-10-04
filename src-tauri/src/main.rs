@@ -74,7 +74,7 @@ async fn spawn_download(app:AppHandle,state:AppState,id:u64,request:DownloadRequ
  let d=under_root(&state,&request.destination)?;tokio::fs::create_dir_all(&d).await.map_err(|e|e.to_string())?;
  safe_child_name(&request.filename)?;let out=d.join(&request.filename);let _=existing_or_parent(&state,&out)?;
  let selector=if request.format.eq_ignore_ascii_case("mp3"){"bestaudio/best".to_string()}else{format!("bestvideo[height<={}] + bestaudio/best",request.quality.trim_end_matches('p'))};
- let yt=engine_binary(&app,"yt-dlp");let mut cmd=Command::new(yt);cmd.args(["--newline","--no-playlist","--continue","-f",&selector,"--merge-output-format",&request.format,"-o",out.to_string_lossy().as_ref(),&request.url]).stdout(Stdio::piped()).stderr(Stdio::null());
+ let yt=engine_binary(&app,"yt-dlp");let mut cmd=Command::new(yt);cmd.args(["--newline","--no-playlist","--continue","-f",&selector]);if request.format.eq_ignore_ascii_case("mp3"){cmd.args(["--extract-audio","--audio-format","mp3","--audio-quality","0"])}else{cmd.args(["--merge-output-format",&request.format])}cmd.args(["-o",out.to_string_lossy().as_ref(),&request.url]).stdout(Stdio::piped()).stderr(Stdio::null());
  if let Some(bin)=engine_dir(&app){cmd.arg("--ffmpeg-location").arg(bin)}
  let mut child=cmd.spawn().map_err(|e|format!("Media engine unavailable: {e}"))?;
  let stdout=child.stdout.take().ok_or_else(||"Unable to read media engine progress".to_string())?;
